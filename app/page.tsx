@@ -4,7 +4,7 @@ import { localGalleryPhotos } from "@/lib/local-gallery";
 export default function Home() {
   const galleryImages = localGalleryPhotos.map((photo) => ({
     src: photo.src,
-    alt: `${photo.collection} — ${photo.title}`,
+    alt: `${photo.collection} - ${photo.title}`,
   }));
 
   return (

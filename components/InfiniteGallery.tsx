@@ -1,5 +1,4 @@
 "use client";
-/* eslint-disable react-hooks/immutability, react-hooks/refs */
 
 import Image from "next/image";
 import type React from "react";
@@ -53,23 +52,24 @@ interface PlaneData {
   y: number;
 }
 
-const DEFAULT_DEPTH_RANGE = 50;
+const BASE_PLANE_SIZE = 2;
+const DEFAULT_Z_SPACING = 3;
 const MAX_HORIZONTAL_OFFSET = 8;
 const MAX_VERTICAL_OFFSET = 8;
 
 const defaultFadeSettings: FadeSettings = {
   fadeIn: { start: 0.05, end: 0.25 },
-  fadeOut: { start: 0.4, end: 0.43 },
+  fadeOut: { start: 0.78, end: 0.96 },
 };
 
 const defaultBlurSettings: BlurSettings = {
   blurIn: { start: 0.0, end: 0.1 },
-  blurOut: { start: 0.4, end: 0.43 },
-  maxBlur: 8.0,
+  blurOut: { start: 0.82, end: 1.0 },
+  maxBlur: 4.5,
 };
 
-const createClothMaterial = () =>
-  new THREE.ShaderMaterial({
+function createClothMaterial() {
+  return new THREE.ShaderMaterial({
     transparent: true,
     uniforms: {
       map: { value: null },
@@ -107,7 +107,7 @@ const createClothMaterial = () =>
           flagWave += secondaryWave;
         }
 
-        pos.z -= (curve + clothEffect + flagWave);
+        pos.z -= curve + clothEffect + flagWave;
 
         gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
       }
@@ -146,45 +146,41 @@ const createClothMaterial = () =>
       }
     `,
   });
+}
 
-function ImagePlane({
-  texture,
-  position,
-  scale,
-  material,
-}: {
-  texture: THREE.Texture;
-  position: [number, number, number];
-  scale: [number, number, number];
-  material: THREE.ShaderMaterial;
-}) {
-  const [isHovered, setIsHovered] = useState(false);
-  const shaderMaterial = useMemo(() => material, [material]);
+function createPlaneLayout(visibleCount: number, totalImages: number, zSpacing: number) {
+  const depthRange = Math.max(visibleCount * zSpacing, 24);
 
-  useEffect(() => {
-    shaderMaterial.uniforms.map.value = texture;
-  }, [shaderMaterial, texture]);
+  return Array.from({ length: visibleCount }, (_, index) => {
+    const horizontalAngle = (index * 2.618) % (Math.PI * 2);
+    const verticalAngle = (index * 1.618 + Math.PI / 3) % (Math.PI * 2);
+    const horizontalRadius = (index % 3) * 1.2;
+    const verticalRadius = ((index + 1) % 4) * 0.8;
 
-  useEffect(() => {
-    shaderMaterial.uniforms.isHovered.value = isHovered ? 1.0 : 0.0;
-  }, [isHovered, shaderMaterial]);
+    return {
+      index,
+      z: ((depthRange / Math.max(visibleCount, 1)) * index) % depthRange,
+      imageIndex: totalImages > 0 ? index % totalImages : 0,
+      x: (Math.sin(horizontalAngle) * horizontalRadius * MAX_HORIZONTAL_OFFSET) / 3,
+      y: (Math.cos(verticalAngle) * verticalRadius * MAX_VERTICAL_OFFSET) / 4,
+    };
+  });
+}
 
-  return (
-    <mesh
-      position={position}
-      scale={scale}
-      material={shaderMaterial}
-      onPointerEnter={() => setIsHovered(true)}
-      onPointerLeave={() => setIsHovered(false)}
-    >
-      <planeGeometry args={[1, 1, 32, 32]} />
-    </mesh>
-  );
+function getImageScale(texture: THREE.Texture) {
+  const image = texture.image as { width?: number; height?: number } | undefined;
+  const aspect =
+    image?.width && image?.height ? image.width / image.height : 1;
+
+  return aspect > 1
+    ? [BASE_PLANE_SIZE * aspect, BASE_PLANE_SIZE, 1]
+    : [BASE_PLANE_SIZE, BASE_PLANE_SIZE / aspect, 1];
 }
 
 function GalleryScene({
   images,
   speed = 1,
+  zSpacing = DEFAULT_Z_SPACING,
   visibleCount = 8,
   fadeSettings = defaultFadeSettings,
   blurSettings = defaultBlurSettings,
@@ -192,6 +188,7 @@ function GalleryScene({
   const scrollVelocityRef = useRef(0);
   const autoPlayRef = useRef(true);
   const lastInteractionRef = useRef(0);
+  const meshRefs = useRef<Array<THREE.Mesh | null>>([]);
 
   const normalizedImages = useMemo(
     () =>
@@ -202,11 +199,32 @@ function GalleryScene({
   );
 
   const textures = useTexture(normalizedImages.map((image) => image.src));
+  const totalImages = normalizedImages.length;
+  const depthRange = Math.max(visibleCount * zSpacing, 24);
+
+  const initialPlanes = useMemo(
+    () => createPlaneLayout(visibleCount, totalImages, zSpacing),
+    [totalImages, visibleCount, zSpacing]
+  );
+
+  const planesData = useRef<PlaneData[]>(initialPlanes);
 
   const materials = useMemo(
     () => Array.from({ length: visibleCount }, () => createClothMaterial()),
     [visibleCount]
   );
+
+  useEffect(() => {
+    textures.forEach((texture) => {
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.anisotropy = 8;
+      texture.needsUpdate = true;
+    });
+  }, [textures]);
+
+  useEffect(() => {
+    planesData.current = initialPlanes;
+  }, [initialPlanes]);
 
   useEffect(
     () => () => {
@@ -215,48 +233,9 @@ function GalleryScene({
     [materials]
   );
 
-  const spatialPositions = useMemo(() => {
-    return Array.from({ length: visibleCount }, (_, index) => {
-      const horizontalAngle = (index * 2.618) % (Math.PI * 2);
-      const verticalAngle = (index * 1.618 + Math.PI / 3) % (Math.PI * 2);
-      const horizontalRadius = (index % 3) * 1.2;
-      const verticalRadius = ((index + 1) % 4) * 0.8;
-
-      return {
-        x:
-          (Math.sin(horizontalAngle) * horizontalRadius * MAX_HORIZONTAL_OFFSET) /
-          3,
-        y:
-          (Math.cos(verticalAngle) * verticalRadius * MAX_VERTICAL_OFFSET) / 4,
-      };
-    });
-  }, [visibleCount]);
-
-  const totalImages = normalizedImages.length;
-  const initialPlanes = useMemo(
-    () =>
-      Array.from({ length: visibleCount }, (_, index) => ({
-        index,
-        z:
-          visibleCount > 0
-            ? ((DEFAULT_DEPTH_RANGE / Math.max(visibleCount, 1)) * index) %
-              DEFAULT_DEPTH_RANGE
-            : 0,
-        imageIndex: totalImages > 0 ? index % totalImages : 0,
-        x: spatialPositions[index]?.x ?? 0,
-        y: spatialPositions[index]?.y ?? 0,
-      })),
-    [spatialPositions, totalImages, visibleCount]
-  );
-  const planesData = useRef<PlaneData[]>(initialPlanes);
-
   useEffect(() => {
     lastInteractionRef.current = Date.now();
   }, []);
-
-  useEffect(() => {
-    planesData.current = initialPlanes;
-  }, [initialPlanes]);
 
   const registerInteraction = useCallback((delta: number) => {
     scrollVelocityRef.current += delta;
@@ -317,24 +296,25 @@ function GalleryScene({
     scrollVelocityRef.current *= 0.95;
 
     const time = state.clock.getElapsedTime();
-    materials.forEach((material) => {
-      material.uniforms.time.value = time;
-      material.uniforms.scrollForce.value = scrollVelocityRef.current;
-    });
-
     const imageAdvance = totalImages > 0 ? visibleCount % totalImages || totalImages : 0;
 
     planesData.current.forEach((plane, index) => {
+      const material = materials[index];
+      const mesh = meshRefs.current[index];
+      if (!material || !mesh) {
+        return;
+      }
+
       let newZ = plane.z + scrollVelocityRef.current * delta * 10;
       let wrapsForward = 0;
       let wrapsBackward = 0;
 
-      if (newZ >= DEFAULT_DEPTH_RANGE) {
-        wrapsForward = Math.floor(newZ / DEFAULT_DEPTH_RANGE);
-        newZ -= DEFAULT_DEPTH_RANGE * wrapsForward;
+      if (newZ >= depthRange) {
+        wrapsForward = Math.floor(newZ / depthRange);
+        newZ -= depthRange * wrapsForward;
       } else if (newZ < 0) {
-        wrapsBackward = Math.ceil(-newZ / DEFAULT_DEPTH_RANGE);
-        newZ += DEFAULT_DEPTH_RANGE * wrapsBackward;
+        wrapsBackward = Math.ceil(-newZ / depthRange);
+        newZ += depthRange * wrapsBackward;
       }
 
       if (wrapsForward > 0 && imageAdvance > 0 && totalImages > 0) {
@@ -346,11 +326,9 @@ function GalleryScene({
         plane.imageIndex = ((nextIndex % totalImages) + totalImages) % totalImages;
       }
 
-      plane.z = ((newZ % DEFAULT_DEPTH_RANGE) + DEFAULT_DEPTH_RANGE) % DEFAULT_DEPTH_RANGE;
-      plane.x = spatialPositions[index]?.x ?? 0;
-      plane.y = spatialPositions[index]?.y ?? 0;
+      plane.z = ((newZ % depthRange) + depthRange) % depthRange;
 
-      const normalizedPosition = plane.z / DEFAULT_DEPTH_RANGE;
+      const normalizedPosition = plane.z / depthRange;
       let opacity = 1;
 
       if (
@@ -398,12 +376,22 @@ function GalleryScene({
         blur = blurSettings.maxBlur;
       }
 
-      const material = materials[index];
+      const texture = textures[plane.imageIndex];
+      if (texture) {
+        material.uniforms.map.value = texture;
+        const [width, height, depth] = getImageScale(texture);
+        mesh.scale.set(width, height, depth);
+      }
+
+      material.uniforms.time.value = time;
+      material.uniforms.scrollForce.value = scrollVelocityRef.current;
       material.uniforms.opacity.value = Math.max(0, Math.min(1, opacity));
       material.uniforms.blurAmount.value = Math.max(
         0,
         Math.min(blurSettings.maxBlur, blur)
       );
+
+      mesh.position.set(plane.x, plane.y, plane.z - depthRange / 2);
     });
   });
 
@@ -413,7 +401,7 @@ function GalleryScene({
 
   return (
     <>
-      {planesData.current.map((plane, index) => {
+      {initialPlanes.map((plane, index) => {
         const texture = textures[plane.imageIndex];
         const material = materials[index];
 
@@ -421,22 +409,26 @@ function GalleryScene({
           return null;
         }
 
-        const imageSize = texture.image as { width?: number; height?: number } | undefined;
-        const aspect =
-          imageSize?.width && imageSize?.height
-            ? imageSize.width / imageSize.height
-            : 1;
-        const scale: [number, number, number] =
-          aspect > 1 ? [2 * aspect, 2, 1] : [2, 2 / aspect, 1];
+        const [width, height, depth] = getImageScale(texture);
 
         return (
-          <ImagePlane
+          <mesh
             key={plane.index}
-            texture={texture}
-            position={[plane.x, plane.y, plane.z - DEFAULT_DEPTH_RANGE / 2]}
-            scale={scale}
+            ref={(node) => {
+              meshRefs.current[index] = node;
+            }}
+            position={[plane.x, plane.y, plane.z - depthRange / 2]}
+            scale={[width, height, depth]}
             material={material}
-          />
+            onPointerEnter={() => {
+              material.uniforms.isHovered.value = 1;
+            }}
+            onPointerLeave={() => {
+              material.uniforms.isHovered.value = 0;
+            }}
+          >
+            <planeGeometry args={[1, 1, 32, 32]} />
+          </mesh>
         );
       })}
     </>
@@ -478,7 +470,7 @@ export default function InfiniteGallery({
   className = "h-96 w-full",
   style,
   speed = 1,
-  zSpacing,
+  zSpacing = DEFAULT_Z_SPACING,
   visibleCount = 8,
   falloff,
   fadeSettings = defaultFadeSettings,
