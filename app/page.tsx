@@ -1,13 +1,11 @@
 import InfiniteGallery from "@/components/InfiniteGallery";
-import { flickrProfileUrl, formatFlickrDate, getFlickrPhotos } from "@/lib/flickr";
+import { localGalleryPhotos } from "@/lib/local-gallery";
 
-export default async function Home() {
-  const photos = await getFlickrPhotos(20);
-  const galleryImages = photos.map((photo) => ({
-    src: photo.image,
-    alt: photo.title,
+export default function Home() {
+  const galleryImages = localGalleryPhotos.map((photo) => ({
+    src: photo.src,
+    alt: `${photo.collection} — ${photo.title}`,
   }));
-  const latestPhoto = photos[0];
 
   return (
     <main className="min-h-screen bg-background">
@@ -23,14 +21,9 @@ export default async function Home() {
       <div className="pointer-events-none fixed inset-x-0 top-0 z-20 flex items-center justify-between px-4 py-4 text-[11px] font-mono uppercase tracking-[0.3em] text-white mix-blend-exclusion md:px-6">
         <p>Aikagra Gupta</p>
         <div className="pointer-events-auto flex items-center gap-4">
-          <a
-            href={flickrProfileUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="transition hover:opacity-70"
-          >
-            Flickr
-          </a>
+          <span>Shanghai</span>
+          <span>MK</span>
+          <span>Shimla</span>
           <a
             href="https://github.com/AikagraGupta/photography-portfolio"
             target="_blank"
@@ -51,8 +44,8 @@ export default async function Home() {
             <span className="italic">I create;</span> therefore I am
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-sm leading-6 text-white/90 md:text-base">
-            Live gallery powered by recent public uploads from Flickr.
-            {latestPhoto ? ` Latest frame: ${latestPhoto.title} — ${formatFlickrDate(latestPhoto.dateTaken)}.` : ""}
+            Local gallery built from desktop photo folders, using originals copied
+            from Shanghai Goated, MK, and Shimla.
           </p>
         </div>
       </div>
