@@ -233,25 +233,30 @@ function GalleryScene({
   }, [visibleCount]);
 
   const totalImages = normalizedImages.length;
-  const planesData = useRef<PlaneData[]>([]);
+  const initialPlanes = useMemo(
+    () =>
+      Array.from({ length: visibleCount }, (_, index) => ({
+        index,
+        z:
+          visibleCount > 0
+            ? ((DEFAULT_DEPTH_RANGE / Math.max(visibleCount, 1)) * index) %
+              DEFAULT_DEPTH_RANGE
+            : 0,
+        imageIndex: totalImages > 0 ? index % totalImages : 0,
+        x: spatialPositions[index]?.x ?? 0,
+        y: spatialPositions[index]?.y ?? 0,
+      })),
+    [spatialPositions, totalImages, visibleCount]
+  );
+  const planesData = useRef<PlaneData[]>(initialPlanes);
 
   useEffect(() => {
     lastInteractionRef.current = Date.now();
   }, []);
 
   useEffect(() => {
-    planesData.current = Array.from({ length: visibleCount }, (_, index) => ({
-      index,
-      z:
-        visibleCount > 0
-          ? ((DEFAULT_DEPTH_RANGE / Math.max(visibleCount, 1)) * index) %
-            DEFAULT_DEPTH_RANGE
-          : 0,
-      imageIndex: totalImages > 0 ? index % totalImages : 0,
-      x: spatialPositions[index]?.x ?? 0,
-      y: spatialPositions[index]?.y ?? 0,
-    }));
-  }, [spatialPositions, totalImages, visibleCount]);
+    planesData.current = initialPlanes;
+  }, [initialPlanes]);
 
   const registerInteraction = useCallback((delta: number) => {
     scrollVelocityRef.current += delta;
