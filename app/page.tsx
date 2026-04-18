@@ -22,8 +22,6 @@ export default function Home() {
         <p>Aikagra Gupta</p>
         <div className="pointer-events-auto flex items-center gap-4">
           <span>Shanghai</span>
-          <span>MK</span>
-          <span>Shimla</span>
           <a
             href="https://github.com/AikagraGupta/photography-portfolio"
             target="_blank"
@@ -44,8 +42,7 @@ export default function Home() {
             <span className="italic">I create;</span> therefore I am
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-sm leading-6 text-white/90 md:text-base">
-            Local gallery built from desktop photo folders, using originals copied
-            from Shanghai Goated, MK, and Shimla.
+            Local gallery built only from the Shanghai photo set.
           </p>
         </div>
       </div>
