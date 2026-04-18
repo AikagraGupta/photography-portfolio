@@ -1,4 +1,4 @@
-import InfiniteGallery from "@/components/InfiniteGallery";
+import HomeScene from "@/components/HomeScene";
 import { localGalleryPhotos } from "@/lib/local-gallery";
 
 export default function Home() {
@@ -9,20 +9,11 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-background">
-      <InfiniteGallery
-        images={galleryImages}
-        speed={1.2}
-        zSpacing={3}
-        visibleCount={12}
-        falloff={{ near: 0.8, far: 14 }}
-        className="h-screen w-full overflow-hidden"
-      />
+      <HomeScene images={galleryImages} />
 
       <div className="pointer-events-none fixed inset-x-0 top-0 z-20 flex items-center justify-between px-4 py-4 text-[11px] font-mono uppercase tracking-[0.3em] text-white mix-blend-exclusion md:px-6">
         <p>Aikagra Gupta</p>
         <div className="pointer-events-auto flex items-center gap-4">
-          <span>Shanghai</span>
-          <span>Malaysia</span>
           <a
             href="https://github.com/AikagraGupta/photography-portfolio"
             target="_blank"
@@ -31,20 +22,6 @@ export default function Home() {
           >
             GitHub
           </a>
-        </div>
-      </div>
-
-      <div className="pointer-events-none fixed inset-0 z-10 flex items-center justify-center px-3 text-center text-white mix-blend-exclusion">
-        <div className="max-w-5xl">
-          <p className="mb-4 text-[11px] font-mono uppercase tracking-[0.38em] text-white/90">
-            Photography + Videography
-          </p>
-          <h1 className="font-serif text-4xl tracking-tight md:text-7xl">
-            <span className="italic">I create;</span> therefore I am
-          </h1>
-          <p className="mx-auto mt-5 max-w-2xl text-sm leading-6 text-white/90 md:text-base">
-            little hobby :) shanghai + malaysia
-          </p>
         </div>
       </div>
 

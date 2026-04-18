@@ -52,6 +52,49 @@ body::before {
   content: "";
 }
 
+.loader-aura {
+  position: absolute;
+  inset: auto;
+  aspect-ratio: 1;
+  width: min(42rem, 70vw);
+  border-radius: 9999px;
+  opacity: 0.24;
+  filter: blur(70px);
+  animation: loaderFloat 10s ease-in-out infinite;
+}
+
+.loader-aura-left {
+  left: -10%;
+  top: 14%;
+  background:
+    radial-gradient(circle at center, rgba(211, 162, 106, 0.5), transparent 68%);
+}
+
+.loader-aura-right {
+  right: -8%;
+  bottom: 8%;
+  animation-delay: -4s;
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.16), transparent 66%);
+}
+
+.loader-noise {
+  position: absolute;
+  inset: 0;
+  opacity: 0.28;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+  background-size: 96px 96px;
+  mask-image: radial-gradient(circle at center, black 36%, transparent 100%);
+}
+
+.loader-progress {
+  transform-origin: left center;
+  transition: transform 280ms ease-out;
+  box-shadow: 0 0 30px rgba(255, 255, 255, 0.28);
+}
+
 ::selection {
   background: rgba(211, 162, 106, 0.28);
   color: var(--foreground);
@@ -131,12 +174,23 @@ body::before {
   }
 }
 
+@keyframes loaderFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, 28px, 0) scale(1.08);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
   }
 
   .ambient-orb,
+  .loader-aura,
   .portfolio-image,
   .link-pill {
     animation: none !important;
