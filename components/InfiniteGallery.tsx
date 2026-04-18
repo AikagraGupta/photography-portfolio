@@ -2,9 +2,9 @@
 
 import Image from "next/image";
 import type React from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { useTexture } from "@react-three/drei";
+import { Preload, useTexture } from "@react-three/drei";
 import * as THREE from "three";
 
 type ImageItem = string | { src: string; alt?: string };
@@ -500,15 +500,18 @@ export default function InfiniteGallery({
   return (
     <div className={className} style={style}>
       <Canvas camera={{ position: [0, 0, 0], fov: 55 }} gl={{ antialias: true, alpha: true }}>
-        <GalleryScene
-          images={images}
-          speed={speed}
-          zSpacing={zSpacing}
-          visibleCount={visibleCount}
-          falloff={falloff}
-          fadeSettings={fadeSettings}
-          blurSettings={blurSettings}
-        />
+        <Suspense fallback={null}>
+          <GalleryScene
+            images={images}
+            speed={speed}
+            zSpacing={zSpacing}
+            visibleCount={visibleCount}
+            falloff={falloff}
+            fadeSettings={fadeSettings}
+            blurSettings={blurSettings}
+          />
+          <Preload all />
+        </Suspense>
       </Canvas>
     </div>
   );
