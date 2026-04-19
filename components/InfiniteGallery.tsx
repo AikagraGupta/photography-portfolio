@@ -1,10 +1,8 @@
 "use client";
 
-import Image from "next/image";
 import type React from "react";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { Preload, useTexture } from "@react-three/drei";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 
 type ImageItem = string | { src: string; alt?: string };
@@ -32,6 +30,14 @@ interface BlurSettings {
   maxBlur: number;
 }
 
+export interface GalleryLoadState {
+  ready: boolean;
+  starterLoaded: number;
+  starterTotal: number;
+  totalLoaded: number;
+  total: number;
+}
+
 interface InfiniteGalleryProps {
   images: ImageItem[];
   speed?: number;
@@ -42,6 +48,7 @@ interface InfiniteGalleryProps {
   blurSettings?: BlurSettings;
   className?: string;
   style?: React.CSSProperties;
+  onLoadStateChange?: (state: GalleryLoadState) => void;
 }
 
 interface PlaneData {
@@ -52,28 +59,22 @@ interface PlaneData {
   y: number;
 }
 
-const BASE_PLANE_SIZE = 2;
-const DEFAULT_Z_SPACING = 3;
+type LoadedTextureMap = Record<number, THREE.Texture>;
+
+const DEFAULT_DEPTH_RANGE = 50;
 const MAX_HORIZONTAL_OFFSET = 8;
 const MAX_VERTICAL_OFFSET = 8;
-
-const defaultFadeSettings: FadeSettings = {
-  fadeIn: { start: 0.05, end: 0.25 },
-  fadeOut: { start: 0.78, end: 0.96 },
-};
-
-const defaultBlurSettings: BlurSettings = {
-  blurIn: { start: 0.0, end: 0.1 },
-  blurOut: { start: 0.82, end: 1.0 },
-  maxBlur: 4.5,
-};
+const BASE_PLANE_SIZE = 2;
+const STARTER_CONCURRENCY = 3;
+const BACKGROUND_CONCURRENCY = 2;
 
 function createClothMaterial() {
   return new THREE.ShaderMaterial({
     transparent: true,
+    toneMapped: false,
     uniforms: {
       map: { value: null },
-      opacity: { value: 1.0 },
+      opacity: { value: 0.0 },
       blurAmount: { value: 0.0 },
       scrollForce: { value: 0.0 },
       time: { value: 0.0 },
@@ -116,7 +117,6 @@ function createClothMaterial() {
       uniform sampler2D map;
       uniform float opacity;
       uniform float blurAmount;
-      uniform float scrollForce;
       varying vec2 vUv;
 
       void main() {
@@ -138,36 +138,13 @@ function createClothMaterial() {
 
           color = blurred / total;
         }
-
-        float curveHighlight = abs(scrollForce) * 0.05;
-        color.rgb += vec3(curveHighlight * 0.1);
-
         gl_FragColor = vec4(color.rgb, color.a * opacity);
       }
     `,
   });
 }
 
-function createPlaneLayout(visibleCount: number, totalImages: number, zSpacing: number) {
-  const depthRange = Math.max(visibleCount * zSpacing, 24);
-
-  return Array.from({ length: visibleCount }, (_, index) => {
-    const horizontalAngle = (index * 2.618) % (Math.PI * 2);
-    const verticalAngle = (index * 1.618 + Math.PI / 3) % (Math.PI * 2);
-    const horizontalRadius = (index % 3) * 1.2;
-    const verticalRadius = ((index + 1) % 4) * 0.8;
-
-    return {
-      index,
-      z: ((depthRange / Math.max(visibleCount, 1)) * index) % depthRange,
-      imageIndex: totalImages > 0 ? index % totalImages : 0,
-      x: (Math.sin(horizontalAngle) * horizontalRadius * MAX_HORIZONTAL_OFFSET) / 3,
-      y: (Math.cos(verticalAngle) * verticalRadius * MAX_VERTICAL_OFFSET) / 4,
-    };
-  });
-}
-
-function getImageScale(texture: THREE.Texture) {
+function getTextureScale(texture: THREE.Texture): [number, number, number] {
   const image = texture.image as { width?: number; height?: number } | undefined;
   const aspect =
     image?.width && image?.height ? image.width / image.height : 1;
@@ -177,18 +154,133 @@ function getImageScale(texture: THREE.Texture) {
     : [BASE_PLANE_SIZE, BASE_PLANE_SIZE / aspect, 1];
 }
 
+function getOpacity(normalizedPosition: number, fadeSettings: FadeSettings) {
+  if (
+    normalizedPosition >= fadeSettings.fadeIn.start &&
+    normalizedPosition <= fadeSettings.fadeIn.end
+  ) {
+    return (
+      (normalizedPosition - fadeSettings.fadeIn.start) /
+      (fadeSettings.fadeIn.end - fadeSettings.fadeIn.start)
+    );
+  }
+
+  if (normalizedPosition < fadeSettings.fadeIn.start) {
+    return 0;
+  }
+
+  if (
+    normalizedPosition >= fadeSettings.fadeOut.start &&
+    normalizedPosition <= fadeSettings.fadeOut.end
+  ) {
+    return (
+      1 -
+      (normalizedPosition - fadeSettings.fadeOut.start) /
+        (fadeSettings.fadeOut.end - fadeSettings.fadeOut.start)
+    );
+  }
+
+  if (normalizedPosition > fadeSettings.fadeOut.end) {
+    return 0;
+  }
+
+  return 1;
+}
+
+function getBlur(normalizedPosition: number, blurSettings: BlurSettings) {
+  if (
+    normalizedPosition >= blurSettings.blurIn.start &&
+    normalizedPosition <= blurSettings.blurIn.end
+  ) {
+    return (
+      blurSettings.maxBlur *
+      (1 -
+        (normalizedPosition - blurSettings.blurIn.start) /
+          (blurSettings.blurIn.end - blurSettings.blurIn.start))
+    );
+  }
+
+  if (normalizedPosition < blurSettings.blurIn.start) {
+    return blurSettings.maxBlur;
+  }
+
+  if (
+    normalizedPosition >= blurSettings.blurOut.start &&
+    normalizedPosition <= blurSettings.blurOut.end
+  ) {
+    return (
+      blurSettings.maxBlur *
+      ((normalizedPosition - blurSettings.blurOut.start) /
+        (blurSettings.blurOut.end - blurSettings.blurOut.start))
+    );
+  }
+
+  if (normalizedPosition > blurSettings.blurOut.end) {
+    return blurSettings.maxBlur;
+  }
+
+  return 0;
+}
+
+function FallbackGallery({ images }: { images: ImageItem[] }) {
+  const normalizedImages = useMemo(
+    () =>
+      images.map((image) =>
+        typeof image === "string" ? { src: image, alt: "" } : image
+      ),
+    [images]
+  );
+
+  return (
+    <div className="flex h-full flex-col items-center justify-center bg-neutral-950 px-4 py-10">
+      <p className="mb-6 text-sm uppercase tracking-[0.35em] text-white/50">
+        WebGL unavailable
+      </p>
+      <div className="grid max-h-[28rem] grid-cols-2 gap-4 overflow-y-auto md:grid-cols-3">
+        {normalizedImages.map((image, index) => (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={image.src}
+            src={image.src || "/placeholder.svg"}
+            alt={image.alt || `Gallery image ${index + 1}`}
+            className="h-32 w-full rounded object-cover"
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function GalleryScene({
   images,
+  textures,
+  starterReady,
   speed = 1,
-  zSpacing = DEFAULT_Z_SPACING,
   visibleCount = 8,
-  fadeSettings = defaultFadeSettings,
-  blurSettings = defaultBlurSettings,
-}: Omit<InfiniteGalleryProps, "className" | "style">) {
+  fadeSettings = {
+    fadeIn: { start: 0.05, end: 0.15 },
+    fadeOut: { start: 0.85, end: 0.95 },
+  },
+  blurSettings = {
+    blurIn: { start: 0.0, end: 0.1 },
+    blurOut: { start: 0.9, end: 1.0 },
+    maxBlur: 3.0,
+  },
+}: Omit<InfiniteGalleryProps, "className" | "style" | "onLoadStateChange"> & {
+  textures: LoadedTextureMap;
+  starterReady: boolean;
+}) {
+  const meshRefs = useRef<Array<THREE.Mesh | null>>([]);
+  const revealProgressRef = useRef<number[]>(Array.from({ length: visibleCount }, () => 0));
+  const displayedTextureIndexRef = useRef<number[]>(
+    Array.from({ length: visibleCount }, () => -1)
+  );
+  const pointerTrackingRef = useRef({ active: false, lastY: 0 });
   const scrollVelocityRef = useRef(0);
   const autoPlayRef = useRef(true);
   const lastInteractionRef = useRef(0);
-  const meshRefs = useRef<Array<THREE.Mesh | null>>([]);
+  const { gl } = useThree();
+  const maxAnisotropy = useMemo(() => gl.capabilities.getMaxAnisotropy(), [gl]);
 
   const normalizedImages = useMemo(
     () =>
@@ -198,33 +290,69 @@ function GalleryScene({
     [images]
   );
 
-  const textures = useTexture(normalizedImages.map((image) => image.src));
-  const totalImages = normalizedImages.length;
-  const depthRange = Math.max(visibleCount * zSpacing, 24);
-
-  const initialPlanes = useMemo(
-    () => createPlaneLayout(visibleCount, totalImages, zSpacing),
-    [totalImages, visibleCount, zSpacing]
-  );
-
-  const planesData = useRef<PlaneData[]>(initialPlanes);
-
   const materials = useMemo(
     () => Array.from({ length: visibleCount }, () => createClothMaterial()),
     [visibleCount]
   );
 
-  useEffect(() => {
-    textures.forEach((texture) => {
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.anisotropy = 8;
-      texture.needsUpdate = true;
+  const spatialPositions = useMemo(() => {
+    const positions: { x: number; y: number }[] = [];
+
+    for (let index = 0; index < visibleCount; index += 1) {
+      const horizontalAngle = (index * 2.618) % (Math.PI * 2);
+      const verticalAngle = (index * 1.618 + Math.PI / 3) % (Math.PI * 2);
+      const horizontalRadius = (index % 3) * 1.2;
+      const verticalRadius = ((index + 1) % 4) * 0.8;
+
+      positions.push({
+        x: (Math.sin(horizontalAngle) * horizontalRadius * MAX_HORIZONTAL_OFFSET) / 3,
+        y: (Math.cos(verticalAngle) * verticalRadius * MAX_VERTICAL_OFFSET) / 4,
+      });
+    }
+
+    return positions;
+  }, [visibleCount]);
+
+  const totalImages = normalizedImages.length;
+  const depthRange = DEFAULT_DEPTH_RANGE;
+  const initialPlanes = useMemo(
+    () =>
+      Array.from({ length: visibleCount }, (_, index) => ({
+        index,
+        z:
+          visibleCount > 0
+            ? ((depthRange / Math.max(visibleCount, 1)) * index) % depthRange
+            : 0,
+        imageIndex: totalImages > 0 ? index % totalImages : 0,
+        x: spatialPositions[index]?.x ?? 0,
+        y: spatialPositions[index]?.y ?? 0,
+      })),
+    [depthRange, spatialPositions, totalImages, visibleCount]
+  );
+  const planesDataRef = useRef<PlaneData[]>(initialPlanes);
+  const firstLoadedIndex = useMemo(() => {
+    let smallestIndex = Number.POSITIVE_INFINITY;
+
+    Object.keys(textures).forEach((key) => {
+      const numericKey = Number(key);
+
+      if (Number.isFinite(numericKey) && numericKey < smallestIndex) {
+        smallestIndex = numericKey;
+      }
     });
+
+    return Number.isFinite(smallestIndex) ? smallestIndex : -1;
   }, [textures]);
 
   useEffect(() => {
-    planesData.current = initialPlanes;
-  }, [initialPlanes]);
+    lastInteractionRef.current = Date.now();
+  }, []);
+
+  useEffect(() => {
+    planesDataRef.current = initialPlanes;
+    revealProgressRef.current = Array.from({ length: visibleCount }, () => 0);
+    displayedTextureIndexRef.current = Array.from({ length: visibleCount }, () => -1);
+  }, [initialPlanes, visibleCount]);
 
   useEffect(
     () => () => {
@@ -233,25 +361,21 @@ function GalleryScene({
     [materials]
   );
 
-  useEffect(() => {
-    lastInteractionRef.current = Date.now();
-  }, []);
-
   const registerInteraction = useCallback((delta: number) => {
     scrollVelocityRef.current += delta;
     autoPlayRef.current = false;
     lastInteractionRef.current = Date.now();
   }, []);
 
-  const handleWheel = useCallback(
-    (event: WheelEvent) => {
-      registerInteraction(event.deltaY * 0.01 * speed);
-    },
-    [registerInteraction, speed]
-  );
+  useEffect(() => {
+    const canvas = gl.domElement;
 
-  const handleKeyDown = useCallback(
-    (event: KeyboardEvent) => {
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      registerInteraction(event.deltaY * 0.01 * speed);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
         registerInteraction(-2 * speed);
       }
@@ -259,24 +383,47 @@ function GalleryScene({
       if (event.key === "ArrowDown" || event.key === "ArrowRight") {
         registerInteraction(2 * speed);
       }
-    },
-    [registerInteraction, speed]
-  );
+    };
 
-  useEffect(() => {
-    const canvas = document.querySelector("canvas");
-    if (!canvas) {
-      return undefined;
-    }
+    const handlePointerDown = (event: PointerEvent) => {
+      pointerTrackingRef.current = {
+        active: true,
+        lastY: event.clientY,
+      };
+      autoPlayRef.current = false;
+      lastInteractionRef.current = Date.now();
+    };
 
-    canvas.addEventListener("wheel", handleWheel, { passive: true });
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!pointerTrackingRef.current.active) {
+        return;
+      }
+
+      const deltaY = pointerTrackingRef.current.lastY - event.clientY;
+      pointerTrackingRef.current.lastY = event.clientY;
+      registerInteraction(deltaY * 0.04 * speed);
+    };
+
+    const handlePointerUp = () => {
+      pointerTrackingRef.current.active = false;
+    };
+
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
+    canvas.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
     document.addEventListener("keydown", handleKeyDown);
 
     return () => {
       canvas.removeEventListener("wheel", handleWheel);
+      canvas.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [handleKeyDown, handleWheel]);
+  }, [gl, registerInteraction, speed]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -289,23 +436,25 @@ function GalleryScene({
   }, []);
 
   useFrame((state, delta) => {
-    if (autoPlayRef.current) {
+    if (autoPlayRef.current && starterReady) {
       scrollVelocityRef.current += 0.3 * delta;
     }
 
     scrollVelocityRef.current *= 0.95;
 
+    const scrollVelocity = scrollVelocityRef.current;
     const time = state.clock.getElapsedTime();
-    const imageAdvance = totalImages > 0 ? visibleCount % totalImages || totalImages : 0;
-
-    planesData.current.forEach((plane, index) => {
-      const material = materials[index];
+    const imageAdvance =
+      totalImages > 0 ? visibleCount % totalImages || totalImages : 0;
+    planesDataRef.current.forEach((plane, index) => {
       const mesh = meshRefs.current[index];
-      if (!material || !mesh) {
+      const material = materials[index];
+
+      if (!mesh || !material) {
         return;
       }
 
-      let newZ = plane.z + scrollVelocityRef.current * delta * 10;
+      let newZ = plane.z + scrollVelocity * delta * 10;
       let wrapsForward = 0;
       let wrapsBackward = 0;
 
@@ -327,71 +476,61 @@ function GalleryScene({
       }
 
       plane.z = ((newZ % depthRange) + depthRange) % depthRange;
+      plane.x = spatialPositions[index]?.x ?? 0;
+      plane.y = spatialPositions[index]?.y ?? 0;
 
-      const normalizedPosition = plane.z / depthRange;
-      let opacity = 1;
+      const desiredIndex = plane.imageIndex;
+      const desiredTexture = textures[desiredIndex];
+      const currentTextureIndex = displayedTextureIndexRef.current[index];
+      const currentTexture =
+        currentTextureIndex >= 0 ? textures[currentTextureIndex] : null;
 
-      if (
-        normalizedPosition >= fadeSettings.fadeIn.start &&
-        normalizedPosition <= fadeSettings.fadeIn.end
-      ) {
-        opacity =
-          (normalizedPosition - fadeSettings.fadeIn.start) /
-          (fadeSettings.fadeIn.end - fadeSettings.fadeIn.start);
-      } else if (normalizedPosition < fadeSettings.fadeIn.start) {
-        opacity = 0;
-      } else if (
-        normalizedPosition >= fadeSettings.fadeOut.start &&
-        normalizedPosition <= fadeSettings.fadeOut.end
-      ) {
-        opacity =
-          1 -
-          (normalizedPosition - fadeSettings.fadeOut.start) /
-            (fadeSettings.fadeOut.end - fadeSettings.fadeOut.start);
-      } else if (normalizedPosition > fadeSettings.fadeOut.end) {
-        opacity = 0;
+      if (desiredTexture && currentTextureIndex !== desiredIndex) {
+        desiredTexture.colorSpace = THREE.SRGBColorSpace;
+        desiredTexture.anisotropy = maxAnisotropy;
+        desiredTexture.needsUpdate = true;
+        material.uniforms.map.value = desiredTexture;
+        mesh.scale.set(...getTextureScale(desiredTexture));
+        displayedTextureIndexRef.current[index] = desiredIndex;
+        revealProgressRef.current[index] = 0;
+      } else if (!currentTexture && firstLoadedIndex >= 0 && textures[firstLoadedIndex]) {
+        const fallbackTexture = textures[firstLoadedIndex];
+
+        if (fallbackTexture) {
+          fallbackTexture.colorSpace = THREE.SRGBColorSpace;
+          fallbackTexture.anisotropy = maxAnisotropy;
+          fallbackTexture.needsUpdate = true;
+          material.uniforms.map.value = fallbackTexture;
+          mesh.scale.set(...getTextureScale(fallbackTexture));
+          displayedTextureIndexRef.current[index] = firstLoadedIndex;
+          revealProgressRef.current[index] = 0;
+        }
       }
 
-      let blur = 0;
-      if (
-        normalizedPosition >= blurSettings.blurIn.start &&
-        normalizedPosition <= blurSettings.blurIn.end
-      ) {
-        blur =
-          blurSettings.maxBlur *
-          (1 -
-            (normalizedPosition - blurSettings.blurIn.start) /
-              (blurSettings.blurIn.end - blurSettings.blurIn.start));
-      } else if (normalizedPosition < blurSettings.blurIn.start) {
-        blur = blurSettings.maxBlur;
-      } else if (
-        normalizedPosition >= blurSettings.blurOut.start &&
-        normalizedPosition <= blurSettings.blurOut.end
-      ) {
-        blur =
-          blurSettings.maxBlur *
-          ((normalizedPosition - blurSettings.blurOut.start) /
-            (blurSettings.blurOut.end - blurSettings.blurOut.start));
-      } else if (normalizedPosition > blurSettings.blurOut.end) {
-        blur = blurSettings.maxBlur;
-      }
-
-      const texture = textures[plane.imageIndex];
-      if (texture) {
-        material.uniforms.map.value = texture;
-        const [width, height, depth] = getImageScale(texture);
-        mesh.scale.set(width, height, depth);
-      }
-
-      material.uniforms.time.value = time;
-      material.uniforms.scrollForce.value = scrollVelocityRef.current;
-      material.uniforms.opacity.value = Math.max(0, Math.min(1, opacity));
-      material.uniforms.blurAmount.value = Math.max(
-        0,
-        Math.min(blurSettings.maxBlur, blur)
+      revealProgressRef.current[index] = Math.min(
+        1,
+        revealProgressRef.current[index] + delta * 2.5
       );
 
-      mesh.position.set(plane.x, plane.y, plane.z - depthRange / 2);
+      const normalizedPosition = plane.z / depthRange;
+      const depthOpacity = Math.max(
+        0,
+        Math.min(1, getOpacity(normalizedPosition, fadeSettings))
+      );
+      const blur = Math.max(
+        0,
+        Math.min(blurSettings.maxBlur, getBlur(normalizedPosition, blurSettings))
+      );
+      const revealOpacity =
+        displayedTextureIndexRef.current[index] >= 0 ? revealProgressRef.current[index] : 0;
+
+      material.uniforms.time.value = time;
+      material.uniforms.scrollForce.value = scrollVelocity;
+      material.uniforms.opacity.value = depthOpacity * revealOpacity;
+      material.uniforms.blurAmount.value = blur;
+
+      const worldZ = plane.z - depthRange / 2;
+      mesh.position.set(plane.x, plane.y, worldZ);
     });
   });
 
@@ -401,67 +540,26 @@ function GalleryScene({
 
   return (
     <>
-      {initialPlanes.map((plane, index) => {
-        const texture = textures[plane.imageIndex];
-        const material = materials[index];
-
-        if (!texture || !material) {
-          return null;
-        }
-
-        const [width, height, depth] = getImageScale(texture);
-
-        return (
-          <mesh
-            key={plane.index}
-            ref={(node) => {
-              meshRefs.current[index] = node;
-            }}
-            position={[plane.x, plane.y, plane.z - depthRange / 2]}
-            scale={[width, height, depth]}
-            material={material}
-            onPointerEnter={() => {
-              material.uniforms.isHovered.value = 1;
-            }}
-            onPointerLeave={() => {
-              material.uniforms.isHovered.value = 0;
-            }}
-          >
-            <planeGeometry args={[1, 1, 32, 32]} />
-          </mesh>
-        );
-      })}
+      {initialPlanes.map((plane, index) => (
+        <mesh
+          key={plane.index}
+          ref={(node) => {
+            meshRefs.current[index] = node;
+          }}
+          position={[plane.x, plane.y, plane.z - depthRange / 2]}
+          scale={[BASE_PLANE_SIZE, BASE_PLANE_SIZE * 1.25, 1]}
+          material={materials[index]}
+          onPointerEnter={() => {
+            materials[index].uniforms.isHovered.value = 1.0;
+          }}
+          onPointerLeave={() => {
+            materials[index].uniforms.isHovered.value = 0.0;
+          }}
+        >
+          <planeGeometry args={[1, 1, 32, 32]} />
+        </mesh>
+      ))}
     </>
-  );
-}
-
-function FallbackGallery({ images }: { images: ImageItem[] }) {
-  const normalizedImages = useMemo(
-    () =>
-      images.map((image) =>
-        typeof image === "string" ? { src: image, alt: "" } : image
-      ),
-    [images]
-  );
-
-  return (
-    <div className="flex h-full flex-col items-center justify-center bg-neutral-950 px-4 py-10">
-      <p className="mb-6 text-sm uppercase tracking-[0.35em] text-white/50">
-        WebGL unavailable
-      </p>
-      <div className="grid max-h-[28rem] grid-cols-2 gap-4 overflow-y-auto md:grid-cols-3">
-        {normalizedImages.map((image, index) => (
-          <Image
-            key={image.src}
-            src={image.src || "/placeholder.svg"}
-            alt={image.alt || `Gallery image ${index + 1}`}
-            width={480}
-            height={480}
-            className="h-32 w-full rounded object-cover"
-          />
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -470,24 +568,174 @@ export default function InfiniteGallery({
   className = "h-96 w-full",
   style,
   speed = 1,
-  zSpacing = DEFAULT_Z_SPACING,
+  zSpacing = 3,
   visibleCount = 8,
-  falloff,
-  fadeSettings = defaultFadeSettings,
-  blurSettings = defaultBlurSettings,
+  fadeSettings = {
+    fadeIn: { start: 0.05, end: 0.25 },
+    fadeOut: { start: 0.4, end: 0.43 },
+  },
+  blurSettings = {
+    blurIn: { start: 0.0, end: 0.1 },
+    blurOut: { start: 0.4, end: 0.43 },
+    maxBlur: 8.0,
+  },
+  onLoadStateChange,
 }: InfiniteGalleryProps) {
   const [webglSupported] = useState(() => {
-    if (typeof window === "undefined") {
+    if (typeof document === "undefined") {
       return true;
     }
 
     try {
       const canvas = document.createElement("canvas");
-      return Boolean(canvas.getContext("webgl"));
+      const gl =
+        canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+
+      return Boolean(gl);
     } catch {
       return false;
     }
   });
+  const [loadedTextures, setLoadedTextures] = useState<LoadedTextureMap>({});
+  const [progressState, setProgressState] = useState({
+    starterLoaded: 0,
+    totalLoaded: 0,
+  });
+  const loadedTexturesRef = useRef<LoadedTextureMap>({});
+
+  const normalizedImages = useMemo(
+    () =>
+      images.map((image) =>
+        typeof image === "string" ? { src: image, alt: "" } : image
+      ),
+    [images]
+  );
+
+  const totalImages = normalizedImages.length;
+  const starterTotal = Math.min(totalImages, Math.max(visibleCount, 10));
+  const ready = starterTotal === 0 || progressState.starterLoaded >= starterTotal;
+
+  useEffect(() => {
+    loadedTexturesRef.current = loadedTextures;
+  }, [loadedTextures]);
+
+  useEffect(
+    () => () => {
+      Object.values(loadedTexturesRef.current).forEach((texture) => {
+        texture.dispose();
+      });
+    },
+    []
+  );
+
+  useEffect(() => {
+    onLoadStateChange?.({
+      ready,
+      starterLoaded: progressState.starterLoaded,
+      starterTotal,
+      totalLoaded: progressState.totalLoaded,
+      total: totalImages,
+    });
+  }, [
+    onLoadStateChange,
+    progressState.starterLoaded,
+    progressState.totalLoaded,
+    ready,
+    starterTotal,
+    totalImages,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loader = new THREE.TextureLoader();
+    const starterIndices = Array.from(
+      { length: starterTotal },
+      (_, index) => index
+    );
+    const backgroundIndices = Array.from(
+      { length: Math.max(totalImages - starterTotal, 0) },
+      (_, index) => index + starterTotal
+    );
+
+    const loadTexture = async (index: number) => {
+      try {
+        const texture = await loader.loadAsync(normalizedImages[index].src);
+
+        if (cancelled) {
+          texture.dispose();
+          return;
+        }
+
+        texture.colorSpace = THREE.SRGBColorSpace;
+
+        startTransition(() => {
+          setLoadedTextures((current) => {
+            if (current[index]) {
+              texture.dispose();
+              return current;
+            }
+
+            return {
+              ...current,
+              [index]: texture,
+            };
+          });
+
+          setProgressState((current) => ({
+            starterLoaded: current.starterLoaded + (index < starterTotal ? 1 : 0),
+            totalLoaded: current.totalLoaded + 1,
+          }));
+        });
+      } catch {
+        if (!cancelled) {
+          startTransition(() => {
+            setProgressState((current) => ({
+              starterLoaded: current.starterLoaded + (index < starterTotal ? 1 : 0),
+              totalLoaded: current.totalLoaded + 1,
+            }));
+          });
+        }
+      }
+    };
+
+    const runQueue = async (indices: number[], concurrency: number) => {
+      if (indices.length === 0) {
+        return;
+      }
+
+      let cursor = 0;
+      const workerCount = Math.min(concurrency, indices.length);
+
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (!cancelled) {
+          const nextIndex = indices[cursor];
+          cursor += 1;
+
+          if (nextIndex === undefined) {
+            return;
+          }
+
+          await loadTexture(nextIndex);
+        }
+      });
+
+      await Promise.all(workers);
+    };
+
+    void (async () => {
+      await runQueue(starterIndices, STARTER_CONCURRENCY);
+
+      if (cancelled) {
+        return;
+      }
+
+      await runQueue(backgroundIndices, BACKGROUND_CONCURRENCY);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedImages, starterTotal, totalImages]);
 
   if (!webglSupported) {
     return (
@@ -498,20 +746,21 @@ export default function InfiniteGallery({
   }
 
   return (
-    <div className={className} style={style}>
-      <Canvas camera={{ position: [0, 0, 0], fov: 55 }} gl={{ antialias: true, alpha: true }}>
-        <Suspense fallback={null}>
-          <GalleryScene
-            images={images}
-            speed={speed}
-            zSpacing={zSpacing}
-            visibleCount={visibleCount}
-            falloff={falloff}
-            fadeSettings={fadeSettings}
-            blurSettings={blurSettings}
-          />
-          <Preload all />
-        </Suspense>
+    <div className={`gallery-shell ${className}`} style={style}>
+      <Canvas
+        camera={{ position: [0, 0, 0], fov: 55 }}
+        gl={{ antialias: true, alpha: true }}
+      >
+        <GalleryScene
+          images={images}
+          textures={loadedTextures}
+          starterReady={ready}
+          speed={speed}
+          zSpacing={zSpacing}
+          visibleCount={visibleCount}
+          fadeSettings={fadeSettings}
+          blurSettings={blurSettings}
+        />
       </Canvas>
     </div>
   );

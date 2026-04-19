@@ -52,6 +52,17 @@ body::before {
   content: "";
 }
 
+.gallery-shell {
+  position: relative;
+}
+
+.gallery-shell canvas {
+  display: block;
+  height: 100% !important;
+  width: 100% !important;
+  touch-action: none;
+}
+
 .loader-aura {
   position: absolute;
   inset: auto;

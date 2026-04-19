@@ -2,8 +2,9 @@ import HomeScene from "@/components/HomeScene";
 import { localGalleryPhotos } from "@/lib/local-gallery";
 
 export default function Home() {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const galleryImages = localGalleryPhotos.map((photo) => ({
-    src: photo.src,
+    src: `${basePath}${photo.src}`,
     alt: `${photo.collection} - ${photo.title}`,
   }));
 
